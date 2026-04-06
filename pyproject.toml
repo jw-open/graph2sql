@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graph2sql"
+version = "0.1.0"
+description = "Graph-based schema analysis for text-to-SQL. Build schema graphs, rank relevant nodes with Personalized PageRank, and extract LLM-ready context. No LLM dependency — bring your own model."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.urls]
+Repository = "https://github.com/jw-open/graph2sql"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["graph2sql*"]
