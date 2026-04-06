@@ -107,9 +107,63 @@ context = graph.rank("how many orders per user")
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | str | yes | Unique identifier |
-| `label` | str | yes | Table or field name — used for query token matching |
-| `content` | str | no | Column definitions, constraints, notes |
-| `attributes` | dict | no | Any extra metadata |
+| `label` | str | yes | Table or column name — used for query token matching |
+| `content` | str | no | Column definitions, constraints, DDL, or notes |
+| `attributes` | dict | no | Typed metadata — see conventions below |
+
+#### Node attribute conventions
+
+Use `attributes` to describe what a node represents. The algorithm also checks attribute string values for query token matching (useful for aliases).
+
+```python
+# Table node
+graph.add_node("orders", "orders",
+    content="id INT PK, customer_id INT FK, total DECIMAL, created_at TIMESTAMP",
+    attributes={
+        "type": "table",
+        "database": "mysql",          # mysql | postgres | sqlite | mongodb | etc.
+        "schema": "public",           # schema/namespace if applicable
+        "alias": "transactions",      # alternative names matched against queries
+        "primary_key": "id",
+    }
+)
+
+# Column node
+graph.add_node("orders.total", "total",
+    content="DECIMAL(10,2) — order grand total including tax",
+    attributes={
+        "type": "column",
+        "table": "orders",
+        "data_type": "DECIMAL",
+        "nullable": "false",
+        "alias": "revenue amount",    # matched against queries
+    }
+)
+
+# View or virtual table
+graph.add_node("monthly_revenue", "monthly_revenue",
+    content="SELECT DATE_TRUNC('month', created_at), SUM(total) FROM orders GROUP BY 1",
+    attributes={
+        "type": "view",
+        "database": "postgres",
+    }
+)
+```
+
+**Recognised `type` values** (convention, not enforced):
+
+| Value | Meaning |
+|---|---|
+| `"table"` | A physical database table |
+| `"column"` | A column within a table |
+| `"view"` | A database view or virtual table |
+| `"index"` | An index definition |
+| `"schema"` | A database schema/namespace grouping |
+
+**Recognised `database` values** (convention, not enforced):
+`"mysql"`, `"postgres"`, `"sqlite"`, `"mongodb"`, `"bigquery"`, `"snowflake"`, `"redshift"`, `"mssql"`, `"oracle"`
+
+Any additional attributes are valid — they are stored as-is and passed through to the LLM context.
 
 ### Edge
 
@@ -117,7 +171,18 @@ context = graph.rank("how many orders per user")
 |---|---|---|
 | `"from"` | str | Source node id |
 | `"to"` | str | Target node id |
-| `"label"` | str | Relationship type (e.g. `"foreign_key"`, `"belongs_to"`) |
+| `"label"` | str | Relationship type — see conventions below |
+
+#### Edge label conventions
+
+| Label | Meaning |
+|---|---|
+| `"foreign_key"` | Standard FK relationship between tables |
+| `"belongs_to"` | Child table → parent table |
+| `"has_many"` | Parent → child (reverse of belongs_to) |
+| `"column_of"` | Column node → its parent table |
+| `"references"` | Looser reference between any two nodes |
+| `"related_to"` | Semantic relationship (no strict FK) |
 
 ---
 
