@@ -1,6 +1,7 @@
 # graph2sql
 
 [![CI](https://github.com/jw-open/graph2sql/actions/workflows/ci.yml/badge.svg)](https://github.com/jw-open/graph2sql/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/graph2sql)](https://pypi.org/project/graph2sql/)
 
 Graph-based schema analysis for text-to-SQL.
 
