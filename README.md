@@ -173,16 +173,62 @@ Any additional attributes are valid — they are stored as-is and passed through
 | `"to"` | str | Target node id |
 | `"label"` | str | Relationship type — see conventions below |
 
-#### Edge label conventions
+#### Edge schema
+
+Edges support an optional `attributes` dict for richer relationship metadata:
+
+```python
+# 1:N — one user has many orders
+graph.add_edge("orders", "users", "belongs_to")
+# or with attributes:
+{
+    "from": "orders",
+    "to": "users",
+    "label": "belongs_to",
+    "attributes": {
+        "cardinality": "many_to_one",   # one_to_one | one_to_many | many_to_one | many_to_many
+        "on_delete": "CASCADE",
+        "nullable": "false",
+        "join": "orders.customer_id = users.id",   # hint for LLM SQL generation
+    }
+}
+
+# M:N — orders ↔ products via order_items
+{
+    "from": "orders",
+    "to": "products",
+    "label": "many_to_many",
+    "attributes": {
+        "cardinality": "many_to_many",
+        "via": "order_items",           # junction table
+        "join": "orders.id = order_items.order_id AND order_items.product_id = products.id",
+    }
+}
+```
+
+**`cardinality` values:**
+
+| Value | Meaning |
+|---|---|
+| `"one_to_one"` | 1:1 |
+| `"one_to_many"` | 1:N (parent → children) |
+| `"many_to_one"` | N:1 (child → parent, most FK relationships) |
+| `"many_to_many"` | M:N (requires a junction table) |
+
+**Edge label conventions:**
 
 | Label | Meaning |
 |---|---|
 | `"foreign_key"` | Standard FK relationship between tables |
-| `"belongs_to"` | Child table → parent table |
-| `"has_many"` | Parent → child (reverse of belongs_to) |
+| `"belongs_to"` | Child → parent (N:1) |
+| `"has_many"` | Parent → children (1:N) |
+| `"many_to_many"` | M:N relationship (use `attributes.via` for junction table) |
+| `"one_to_one"` | 1:1 relationship |
 | `"column_of"` | Column node → its parent table |
 | `"references"` | Looser reference between any two nodes |
 | `"related_to"` | Semantic relationship (no strict FK) |
+
+The `join` attribute is especially useful — it gives the LLM the exact JOIN condition to use rather than inferring it.
 
 ---
 
