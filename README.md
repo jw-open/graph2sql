@@ -12,19 +12,18 @@ Build a schema graph (tables and fields as nodes, relationships as edges), rank 
 
 ## How it works
 
-```
-natural language question
-        +
-  schema graph
-        │
-        ▼
-Personalized PageRank
-        │
-        ▼
-ranked subgraph (top-k nodes + 1-hop neighbours)
-        │
-        ▼
-  structured context  ──►  your LLM  ──►  SQL
+```mermaid
+flowchart LR
+    A["🗣️ Natural language\nquestion"] --> C
+    B["🗄️ Schema graph\ntables · columns · relationships"] --> C
+    C["Personalized\nPageRank"] --> D["Ranked subgraph\ntop-k nodes + 1-hop neighbours"]
+    D --> E["Structured\ncontext"]
+    E --> F["Your LLM"]
+    F --> G["✅ SQL"]
+
+    style C fill:#6366f1,color:#fff,stroke:none
+    style F fill:#10b981,color:#fff,stroke:none
+    style G fill:#f59e0b,color:#fff,stroke:none
 ```
 
 Instead of dumping the entire schema into an LLM prompt, graph2sql identifies which tables and relationships are most relevant to the question — reducing noise and improving SQL accuracy.
