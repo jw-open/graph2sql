@@ -90,11 +90,21 @@ def personalized_page_rank(
             M[:, j] = 1.0 / n
 
     # Build personalization vector using token overlap between query and labels.
+    # Also matches against attribute values — use attributes like {"alias": "customers"}
+    # to make a node labeled "users" match queries containing "customers".
     query_tokens = set(re.findall(r"\w+", query.lower()))
     p = np.zeros(n)
-    for i, label in enumerate(labels):
-        label_tokens = re.findall(r"\w+", label)
+    for i, node in enumerate(nodes):
+        label_tokens = re.findall(r"\w+", node["label"].lower())
         match_count = sum(1 for token in label_tokens if token in query_tokens)
+
+        # Also check attribute values for additional token matches.
+        attrs = node.get("attributes") or {}
+        for attr_value in attrs.values():
+            if isinstance(attr_value, str):
+                attr_tokens = re.findall(r"\w+", attr_value.lower())
+                match_count += sum(1 for token in attr_tokens if token in query_tokens)
+
         p[i] = match_count
 
     if p.sum() == 0:

@@ -1,5 +1,7 @@
 # graph2sql
 
+[![CI](https://github.com/jw-open/graph2sql/actions/workflows/ci.yml/badge.svg)](https://github.com/jw-open/graph2sql/actions/workflows/ci.yml)
+
 Graph-based schema analysis for text-to-SQL.
 
 Build a schema graph (tables and fields as nodes, relationships as edges), rank the most relevant nodes for a natural language question using **Personalized PageRank**, and extract structured context ready to pass to any LLM for SQL generation.
@@ -172,6 +174,41 @@ pytest tests/
 - **No database connection required** — pass schema definitions as strings in `content`.
 - **Bring your own LLM** — `rank()` returns a plain dict you can serialize and inject into any prompt.
 - **Decoupled from infra** — no FastAPI, MongoDB, Redis, or cloud dependencies.
+
+---
+
+## Known limitations
+
+**Token matching is exact.** The PPR algorithm matches query words against node labels using exact token overlap — it does not perform stemming, fuzzy matching, or semantic similarity.
+
+For example, a query containing `"customer"` will not match a node labeled `"users"`.
+
+**Workaround: use `attributes` for aliases.**
+
+Add alternative names as attribute values on the node. The algorithm also checks all attribute values for token matches:
+
+```python
+graph.add_node(
+    "users",
+    "users",
+    content="id, name, email",
+    attributes={
+        "alias": "customers",
+        "also_known_as": "clients members",
+    }
+)
+
+# Now "customers" and "clients" in a query will match this node
+context = graph.rank("total revenue by customers")
+```
+
+Supported attribute patterns:
+- `alias` — primary alternative name
+- `also_known_as` — space-separated synonyms
+- `related_to` — domain terms associated with this table
+- `associated_with` — any custom terms relevant to queries
+
+Any string attribute value is tokenized and matched — the key name is not significant.
 
 ---
 
