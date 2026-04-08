@@ -3,9 +3,11 @@
 [![CI](https://github.com/jw-open/graph2sql/actions/workflows/ci.yml/badge.svg)](https://github.com/jw-open/graph2sql/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/graph2sql)](https://pypi.org/project/graph2sql/)
 
-Graph-based schema analysis for text-to-SQL.
+**Stop dumping your entire database schema into LLM prompts.**
 
-Build a schema graph (tables and fields as nodes, relationships as edges), rank the most relevant nodes for a natural language question using **Personalized PageRank**, and extract structured context ready to pass to any LLM for SQL generation.
+When you ask an AI to write SQL, you usually paste the full schema and hope it figures out which tables matter. That works for small databases — but as your schema grows, the noise drowns out the signal, token costs rise, and accuracy drops.
+
+graph2sql solves this by building a **schema graph** and using **Personalized PageRank** to find exactly which tables and relationships are relevant to your question — then hands that focused context to whichever LLM you choose.
 
 **No LLM included. Bring your own model.**
 
@@ -27,7 +29,11 @@ flowchart LR
     style G fill:#f59e0b,color:#fff,stroke:none
 ```
 
-Instead of dumping the entire schema into an LLM prompt, graph2sql identifies which tables and relationships are most relevant to the question — reducing noise and improving SQL accuracy.
+1. You describe your schema as a graph — tables and columns as nodes, foreign keys as edges
+2. You ask a question in plain English
+3. graph2sql ranks the most relevant nodes using Personalized PageRank
+4. You get a clean subgraph — not the whole schema, just what matters
+5. Feed it to any LLM and get better SQL with fewer tokens
 
 ---
 
@@ -37,14 +43,6 @@ Instead of dumping the entire schema into an LLM prompt, graph2sql identifies wh
 pip install graph2sql
 ```
 
-Or from source:
-
-```bash
-git clone https://github.com/jw-open/graph2sql
-cd graph2sql
-pip install -e ".[dev]"
-```
-
 ---
 
 ## Quick start
@@ -52,37 +50,28 @@ pip install -e ".[dev]"
 ```python
 from graph2sql import SchemaGraph
 
-# Build the schema graph
+# Describe your schema as a graph
 graph = SchemaGraph()
-
-graph.add_node("users",       "users",       content="id INT, name VARCHAR, email VARCHAR, country VARCHAR")
-graph.add_node("orders",      "orders",      content="id INT, customer_id INT, total DECIMAL, created_at TIMESTAMP")
-graph.add_node("products",    "products",    content="id INT, name VARCHAR, price DECIMAL, category VARCHAR")
-graph.add_node("order_items", "order_items", content="id INT, order_id INT, product_id INT, quantity INT")
+graph.add_node("users",   "users",   content="id, name, email, country")
+graph.add_node("orders",  "orders",  content="id, customer_id, total, created_at")
+graph.add_node("products","products",content="id, name, price, category")
+graph.add_node("order_items","order_items",content="id, order_id, product_id, quantity")
 
 graph.add_edge("orders",      "users",    "belongs_to")
 graph.add_edge("order_items", "orders",   "belongs_to")
 graph.add_edge("order_items", "products", "references")
 
-# Rank nodes for a natural language question
+# Ask a question — get back only the relevant tables
 context = graph.rank("total revenue by customer last month", k=3)
 
-# Pass context to your LLM
-print(context)
-# {
-#   "nodes": [
-#     {"label": "orders", "content": "...", "score": 0.312, ...},
-#     {"label": "users",  "content": "...", "score": 0.198, ...},
-#     ...
-#   ],
-#   "edges": [
-#     {"from": "orders", "to": "users", "label": "belongs_to"},
-#     ...
-#   ]
-# }
+# Pass context["nodes"] and context["edges"] to your LLM prompt
 ```
 
+The `context` dict contains only the tables and relationships relevant to your question, with a relevance score on each top-k node. Feed it to GPT-4, Llama, Qwen — whatever you use.
+
 ### Load from an existing dict
+
+If you already store your schema as JSON or a dict, you can load it directly:
 
 ```python
 graph = SchemaGraph.from_dict({
@@ -94,170 +83,6 @@ graph = SchemaGraph.from_dict({
         {"from": "orders", "to": "users", "label": "belongs_to"}
     ]
 })
-
-context = graph.rank("how many orders per user")
-```
-
----
-
-## Graph schema
-
-### Node
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | str | yes | Unique identifier |
-| `label` | str | yes | Table or column name — used for query token matching |
-| `content` | str | no | Column definitions, constraints, DDL, or notes |
-| `attributes` | dict | no | Typed metadata — see conventions below |
-
-#### Node attribute conventions
-
-Use `attributes` to describe what a node represents. The algorithm also checks attribute string values for query token matching (useful for aliases).
-
-```python
-# Table node
-graph.add_node("orders", "orders",
-    content="id INT PK, customer_id INT FK, total DECIMAL, created_at TIMESTAMP",
-    attributes={
-        "type": "table",
-        "database": "mysql",          # mysql | postgres | sqlite | mongodb | etc.
-        "schema": "public",           # schema/namespace if applicable
-        "alias": "transactions",      # alternative names matched against queries
-        "primary_key": "id",
-    }
-)
-
-# Column node
-graph.add_node("orders.total", "total",
-    content="DECIMAL(10,2) — order grand total including tax",
-    attributes={
-        "type": "column",
-        "table": "orders",
-        "data_type": "DECIMAL",
-        "nullable": "false",
-        "alias": "revenue amount",    # matched against queries
-    }
-)
-
-# View or virtual table
-graph.add_node("monthly_revenue", "monthly_revenue",
-    content="SELECT DATE_TRUNC('month', created_at), SUM(total) FROM orders GROUP BY 1",
-    attributes={
-        "type": "view",
-        "database": "postgres",
-    }
-)
-```
-
-**Recognised `type` values** (convention, not enforced):
-
-| Value | Meaning |
-|---|---|
-| `"table"` | A physical database table |
-| `"column"` | A column within a table |
-| `"view"` | A database view or virtual table |
-| `"index"` | An index definition |
-| `"schema"` | A database schema/namespace grouping |
-
-**Recognised `database` values** (convention, not enforced):
-`"mysql"`, `"postgres"`, `"sqlite"`, `"mongodb"`, `"bigquery"`, `"snowflake"`, `"redshift"`, `"mssql"`, `"oracle"`
-
-Any additional attributes are valid — they are stored as-is and passed through to the LLM context.
-
-### Edge
-
-| Field | Type | Description |
-|---|---|---|
-| `"from"` | str | Source node id |
-| `"to"` | str | Target node id |
-| `"label"` | str | Relationship type — see conventions below |
-
-#### Edge schema
-
-Edges support an optional `attributes` dict for richer relationship metadata:
-
-```python
-# 1:N — one user has many orders
-graph.add_edge("orders", "users", "belongs_to")
-# or with attributes:
-{
-    "from": "orders",
-    "to": "users",
-    "label": "belongs_to",
-    "attributes": {
-        "cardinality": "many_to_one",   # one_to_one | one_to_many | many_to_one | many_to_many
-        "on_delete": "CASCADE",
-        "nullable": "false",
-        "join": "orders.customer_id = users.id",   # hint for LLM SQL generation
-    }
-}
-
-# M:N — orders ↔ products via order_items
-{
-    "from": "orders",
-    "to": "products",
-    "label": "many_to_many",
-    "attributes": {
-        "cardinality": "many_to_many",
-        "via": "order_items",           # junction table
-        "join": "orders.id = order_items.order_id AND order_items.product_id = products.id",
-    }
-}
-```
-
-**`cardinality` values:**
-
-| Value | Meaning |
-|---|---|
-| `"one_to_one"` | 1:1 |
-| `"one_to_many"` | 1:N (parent → children) |
-| `"many_to_one"` | N:1 (child → parent, most FK relationships) |
-| `"many_to_many"` | M:N (requires a junction table) |
-
-**Edge label conventions:**
-
-| Label | Meaning |
-|---|---|
-| `"foreign_key"` | Standard FK relationship between tables |
-| `"belongs_to"` | Child → parent (N:1) |
-| `"has_many"` | Parent → children (1:N) |
-| `"many_to_many"` | M:N relationship (use `attributes.via` for junction table) |
-| `"one_to_one"` | 1:1 relationship |
-| `"column_of"` | Column node → its parent table |
-| `"references"` | Looser reference between any two nodes |
-| `"related_to"` | Semantic relationship (no strict FK) |
-
-The `join` attribute is especially useful — it gives the LLM the exact JOIN condition to use rather than inferring it.
-
----
-
-## API reference
-
-### `SchemaGraph`
-
-```python
-SchemaGraph()
-SchemaGraph.from_dict(graph: dict) -> SchemaGraph
-graph.add_node(id, label, content=None, attributes=None) -> SchemaGraph
-graph.add_edge(from_id, to_id, label) -> SchemaGraph
-graph.rank(query, k=3, alpha=0.85) -> dict
-graph.to_dict() -> dict
-```
-
-### `personalized_page_rank`
-
-Low-level function used internally by `SchemaGraph.rank()`.
-
-```python
-from graph2sql import personalized_page_rank
-
-result = personalized_page_rank(
-    query="revenue by customer",
-    graph={"nodes": [...], "edges": [...]},
-    alpha=0.85,   # damping factor
-    k=3,          # top-k seed nodes
-)
 ```
 
 ---
@@ -265,61 +90,131 @@ result = personalized_page_rank(
 ## Run the example
 
 ```bash
+git clone https://github.com/jw-open/graph2sql
+cd graph2sql
+pip install -e ".[dev]"
 python examples/ecommerce.py
 ```
+
+---
+
+## Schema reference
+
+### Nodes
+
+Each node represents a table, column, view, or any named schema entity.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | str | yes | Unique identifier |
+| `label` | str | yes | Name used for query matching (table name, column name) |
+| `content` | str | no | Column definitions, DDL, or a plain description |
+| `attributes` | dict | no | Type, database, aliases, cardinality hints — see below |
+
+**Common attributes:**
+
+```python
+graph.add_node("orders", "orders",
+    content="id INT PK, customer_id INT FK, total DECIMAL, created_at TIMESTAMP",
+    attributes={
+        "type": "table",           # table | column | view | index
+        "database": "postgres",    # mysql | postgres | sqlite | bigquery | snowflake | ...
+        "alias": "transactions",   # alternative name matched against queries
+        "primary_key": "id",
+    }
+)
+```
+
+### Edges
+
+Each edge represents a relationship between two nodes.
+
+| Field | Type | Description |
+|---|---|---|
+| `"from"` | str | Source node id |
+| `"to"` | str | Target node id |
+| `"label"` | str | Relationship type (`"belongs_to"`, `"foreign_key"`, `"references"`, ...) |
+
+**With relationship metadata:**
+
+```python
+# Add cardinality and join hint — helps the LLM write better JOINs
+graph.add_edge("orders", "users", "belongs_to")
+# Extended form with attributes:
+{
+    "from": "orders", "to": "users", "label": "belongs_to",
+    "attributes": {
+        "cardinality": "many_to_one",                   # one_to_one | one_to_many | many_to_one | many_to_many
+        "join": "orders.customer_id = users.id",        # explicit JOIN hint for the LLM
+    }
+}
+
+# Many-to-many via junction table
+{
+    "from": "orders", "to": "products", "label": "many_to_many",
+    "attributes": {
+        "cardinality": "many_to_many",
+        "via": "order_items",
+        "join": "orders.id = order_items.order_id AND order_items.product_id = products.id",
+    }
+}
+```
+
+---
+
+## API
+
+```python
+from graph2sql import SchemaGraph
+
+g = SchemaGraph()
+g.add_node(id, label, content=None, attributes=None)  # returns self (chainable)
+g.add_edge(from_id, to_id, label)                     # returns self (chainable)
+g.rank(query, k=3, alpha=0.85)                        # returns {"nodes": [...], "edges": [...]}
+g.to_dict()                                           # returns raw graph dict
+SchemaGraph.from_dict(graph_dict)                     # load from existing dict
+```
+
+---
+
+## Known limitations
+
+**Matching is exact word-level.** The algorithm matches words in your question against node labels — `"customer"` won't match a node labeled `"users"`.
+
+**Fix: use `alias` in attributes.** Any string attribute value is also matched against your query:
+
+```python
+graph.add_node("users", "users",
+    content="id, name, email",
+    attributes={"alias": "customers clients members"}
+)
+# Now "customers" in a query matches this node
+```
+
+---
+
+## Benchmarks
+
+Evaluation against [BIRD-SQL](https://bird-bench.github.io/) and [Spider](https://yale-nlp.github.io/spider/) is planned for v0.2.0.
+
+The goal: show that graph2sql-ranked context achieves comparable SQL accuracy to full-schema prompting while using significantly fewer tokens.
+
+---
+
+## Design goals
+
+- Pure Python + numpy — no LLM, no database, no cloud
+- Works with any model (GPT-4, Llama, Qwen, Claude, Mistral...)
+- `rank()` returns a plain dict — serialize it however you want
+- No FastAPI, MongoDB, Redis, or infra dependencies
 
 ---
 
 ## Run tests
 
 ```bash
-pip install -e ".[dev]"
 pytest tests/
 ```
-
----
-
-## Design principles
-
-- **No LLM dependency** — pure Python + numpy. Works with any model or no model at all.
-- **No database connection required** — pass schema definitions as strings in `content`.
-- **Bring your own LLM** — `rank()` returns a plain dict you can serialize and inject into any prompt.
-- **Decoupled from infra** — no FastAPI, MongoDB, Redis, or cloud dependencies.
-
----
-
-## Known limitations
-
-**Token matching is exact.** The PPR algorithm matches query words against node labels using exact token overlap — it does not perform stemming, fuzzy matching, or semantic similarity.
-
-For example, a query containing `"customer"` will not match a node labeled `"users"`.
-
-**Workaround: use `attributes` for aliases.**
-
-Add alternative names as attribute values on the node. The algorithm also checks all attribute values for token matches:
-
-```python
-graph.add_node(
-    "users",
-    "users",
-    content="id, name, email",
-    attributes={
-        "alias": "customers",
-        "also_known_as": "clients members",
-    }
-)
-
-# Now "customers" and "clients" in a query will match this node
-context = graph.rank("total revenue by customers")
-```
-
-Supported attribute patterns:
-- `alias` — primary alternative name
-- `also_known_as` — space-separated synonyms
-- `related_to` — domain terms associated with this table
-- `associated_with` — any custom terms relevant to queries
-
-Any string attribute value is tokenized and matched — the key name is not significant.
 
 ---
 
