@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .matching import soft_match_score
 from .types import GraphDict
 
 
@@ -89,23 +90,17 @@ def personalized_page_rank(
             # Dangling node: distribute probability uniformly.
             M[:, j] = 1.0 / n
 
-    # Build personalization vector using token overlap between query and labels.
-    # Also matches against attribute values — use attributes like {"alias": "customers"}
-    # to make a node labeled "users" match queries containing "customers".
-    query_tokens = set(re.findall(r"\w+", query.lower()))
+    # Build personalization vector using soft token matching.
+    # soft_match_score uses stemming + substring matching, so "customers" matches
+    # "customer", "customer_id" etc. Also checks content and attribute values.
     p = np.zeros(n)
     for i, node in enumerate(nodes):
-        label_tokens = re.findall(r"\w+", node["label"].lower())
-        match_count = sum(1 for token in label_tokens if token in query_tokens)
-
-        # Also check attribute values for additional token matches.
-        attrs = node.get("attributes") or {}
-        for attr_value in attrs.values():
-            if isinstance(attr_value, str):
-                attr_tokens = re.findall(r"\w+", attr_value.lower())
-                match_count += sum(1 for token in attr_tokens if token in query_tokens)
-
-        p[i] = match_count
+        p[i] = soft_match_score(
+            query=query,
+            label=node["label"],
+            content=node.get("content") or "",
+            attributes=node.get("attributes"),
+        )
 
     if p.sum() == 0:
         return {"nodes": [], "edges": []}
