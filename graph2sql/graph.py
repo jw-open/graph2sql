@@ -5,10 +5,69 @@ Build a schema graph from a dict, then call .rank() to extract
 a ranked subgraph as context for LLM-based SQL generation.
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 from .ranking import personalized_page_rank
 from .types import GraphDict, make_edge, make_node
+
+
+# ---------------------------------------------------------------------------
+# DDL parsing helpers (module-level, no dependencies)
+# ---------------------------------------------------------------------------
+
+def _split_ddl_body(body: str) -> List[str]:
+    """Split a CREATE TABLE body into individual column/constraint clauses."""
+    clauses: List[str] = []
+    depth = 0
+    current: List[str] = []
+    for char in body:
+        if char == "(":
+            depth += 1
+            current.append(char)
+        elif char == ")":
+            depth -= 1
+            current.append(char)
+        elif char == "," and depth == 0:
+            clauses.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if current:
+        clauses.append("".join(current))
+    return clauses
+
+
+def _unquote(name: str) -> str:
+    """Strip SQL quoting characters from an identifier."""
+    return name.strip().strip("`\"[]")
+
+
+def _extract_table_blocks(ddl: str) -> List[tuple]:
+    """
+    Return list of (table_name, body) tuples extracted from CREATE TABLE DDL.
+    Uses paren-depth tracking so column types like VARCHAR(100) don't confuse
+    the parser.
+    """
+    create_re = re.compile(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`\"\[]?\w+[`\"\]]?)\s*\(",
+        re.IGNORECASE,
+    )
+    results = []
+    for m in create_re.finditer(ddl):
+        table_name = _unquote(m.group(1))
+        start = m.end()  # position right after the opening '('
+        depth = 1
+        i = start
+        while i < len(ddl) and depth > 0:
+            if ddl[i] == "(":
+                depth += 1
+            elif ddl[i] == ")":
+                depth -= 1
+            i += 1
+        body = ddl[start : i - 1]  # everything between the outer parens
+        results.append((table_name, body))
+    return results
 
 
 class SchemaGraph:
@@ -163,6 +222,153 @@ class SchemaGraph:
     def to_dict(self) -> GraphDict:
         """Return the raw graph dict ``{"nodes": [...], "edges": [...]}"``."""
         return {"nodes": self._nodes, "edges": self._edges}
+
+    # ------------------------------------------------------------------
+    # DDL parsing (pure Python, no dependencies)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_ddl(cls, ddl: str) -> "SchemaGraph":
+        """
+        Build a SchemaGraph by parsing raw SQL DDL statements.
+
+        Supports common SQL dialects (PostgreSQL, MySQL, SQLite).
+        Handles ``CREATE TABLE`` statements including:
+
+        * Column definitions with types, ``PRIMARY KEY``, and ``NOT NULL``
+        * Block-level ``PRIMARY KEY (col, ...)`` constraints
+        * Inline ``REFERENCES other_table`` and block-level ``FOREIGN KEY``
+
+        No live database or extra dependencies required — pure Python.
+
+        Parameters
+        ----------
+        ddl : str
+            One or more ``CREATE TABLE`` SQL statements.
+
+        Returns
+        -------
+        SchemaGraph
+
+        Example
+        -------
+        >>> ddl = '''
+        ...   CREATE TABLE customers (
+        ...     id   INT PRIMARY KEY,
+        ...     name VARCHAR(100) NOT NULL,
+        ...     email VARCHAR(200)
+        ...   );
+        ...   CREATE TABLE orders (
+        ...     id          INT PRIMARY KEY,
+        ...     customer_id INT NOT NULL REFERENCES customers(id),
+        ...     total       DECIMAL(10,2)
+        ...   );
+        ... '''
+        >>> g = SchemaGraph.from_ddl(ddl)
+        >>> context = g.rank("total revenue per customer")
+        """
+        instance = cls()
+
+        # Collect tables first so FK edges can reference any table
+        parsed: Dict[str, Any] = {}
+
+        for table_name, body in _extract_table_blocks(ddl):
+            clauses = _split_ddl_body(body)
+
+            pk_cols: set = set()
+            col_defs: List[str] = []
+            fk_targets: List[str] = []
+
+            for clause in clauses:
+                clause = clause.strip()
+                if not clause:
+                    continue
+                upper = clause.upper().lstrip()
+
+                # Block PRIMARY KEY (col, ...)
+                pk_m = re.match(
+                    r"PRIMARY\s+KEY\s*\(([^)]+)\)", clause, re.IGNORECASE
+                )
+                if pk_m:
+                    for col in pk_m.group(1).split(","):
+                        pk_cols.add(_unquote(col))
+                    continue
+
+                # Block FOREIGN KEY (...) REFERENCES table(...)
+                fk_m = re.match(
+                    r"(?:CONSTRAINT\s+\S+\s+)?FOREIGN\s+KEY\s*\([^)]+\)\s*"
+                    r"REFERENCES\s+([`\"\[]?\w+[`\"\]]?)",
+                    clause, re.IGNORECASE,
+                )
+                if fk_m:
+                    fk_targets.append(_unquote(fk_m.group(1)))
+                    continue
+
+                # Skip other table-level constraints
+                if re.match(r"(UNIQUE|CHECK|INDEX|KEY|CONSTRAINT)\b", upper):
+                    continue
+
+                # Column definition
+                col_m = re.match(
+                    r"([`\"\[]?\w+[`\"\]]?)\s+(\S+.*)", clause, re.IGNORECASE
+                )
+                if not col_m:
+                    continue
+
+                col_name = _unquote(col_m.group(1))
+                rest = col_m.group(2)
+
+                # Type (may include size: VARCHAR(100))
+                type_m = re.match(r"(\w+(?:\s*\([^)]*\))?)", rest)
+                col_type = type_m.group(1) if type_m else rest.split()[0]
+
+                flags: List[str] = []
+                if re.search(r"\bPRIMARY\s+KEY\b", rest, re.IGNORECASE):
+                    pk_cols.add(col_name)
+                    flags.append("PK")
+                if re.search(r"\bNOT\s+NULL\b", rest, re.IGNORECASE):
+                    flags.append("NOT NULL")
+
+                # Inline REFERENCES
+                ref_m = re.search(
+                    r"\bREFERENCES\s+([`\"\[]?\w+[`\"\]]?)", rest, re.IGNORECASE
+                )
+                if ref_m:
+                    fk_targets.append(_unquote(ref_m.group(1)))
+
+                flag_str = " " + " ".join(flags) if flags else ""
+                col_defs.append(f"{col_name} {col_type}{flag_str}")
+
+            # Apply block-level PK flags
+            final_defs = []
+            for col_def in col_defs:
+                col_name = col_def.split()[0]
+                if col_name in pk_cols and "PK" not in col_def:
+                    final_defs.append(col_def + " PK")
+                else:
+                    final_defs.append(col_def)
+
+            parsed[table_name] = {
+                "col_defs": final_defs,
+                "fk_targets": fk_targets,
+            }
+
+        # Add nodes
+        for table_name, info in parsed.items():
+            content = ", ".join(info["col_defs"])
+            instance.add_node(
+                table_name, table_name,
+                content=content,
+                attributes={"type": "table"},
+            )
+
+        # Add FK edges (second pass so all nodes exist)
+        for table_name, info in parsed.items():
+            for ref_table in info["fk_targets"]:
+                if ref_table in instance._node_ids:
+                    instance.add_edge(table_name, ref_table, "foreign_key")
+
+        return instance
 
     # ------------------------------------------------------------------
     # Database introspection (optional — requires SQLAlchemy)
