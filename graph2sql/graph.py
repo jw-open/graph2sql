@@ -164,6 +164,84 @@ class SchemaGraph:
         """Return the raw graph dict ``{"nodes": [...], "edges": [...]}"``."""
         return {"nodes": self._nodes, "edges": self._edges}
 
+    # ------------------------------------------------------------------
+    # Database introspection (optional — requires SQLAlchemy)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_sqlalchemy(cls, engine: Any) -> "SchemaGraph":
+        """
+        Build a SchemaGraph by introspecting a live database via SQLAlchemy.
+
+        Each table becomes a node whose ``content`` lists every column with its
+        type and key constraints.  Foreign-key relationships become directed
+        edges between table nodes.
+
+        Requires SQLAlchemy (any version ≥ 1.4)::
+
+            pip install graph2sql[sqlalchemy]
+
+        Parameters
+        ----------
+        engine : sqlalchemy.engine.Engine
+            A connected SQLAlchemy engine (``create_engine(...)``).
+
+        Returns
+        -------
+        SchemaGraph
+
+        Example
+        -------
+        >>> from sqlalchemy import create_engine
+        >>> from graph2sql import SchemaGraph
+        >>> engine = create_engine("postgresql://user:pw@localhost/mydb")
+        >>> g = SchemaGraph.from_sqlalchemy(engine)
+        >>> context = g.rank("total revenue per customer last month")
+        """
+        try:
+            from sqlalchemy import inspect as sa_inspect
+        except ImportError:
+            raise ImportError(
+                "SQLAlchemy is required for from_sqlalchemy(). "
+                "Install it with: pip install graph2sql[sqlalchemy]"
+            )
+
+        inspector = sa_inspect(engine)
+        instance = cls()
+
+        for table_name in inspector.get_table_names():
+            columns = inspector.get_columns(table_name)
+            pk_info = inspector.get_pk_constraint(table_name)
+            pk_cols = set(pk_info.get("constrained_columns", []))
+
+            col_defs = []
+            for col in columns:
+                col_type = str(col["type"])
+                flags = []
+                if col["name"] in pk_cols:
+                    flags.append("PK")
+                if not col.get("nullable", True):
+                    flags.append("NOT NULL")
+                flag_str = " " + " ".join(flags) if flags else ""
+                col_defs.append(f"{col['name']} {col_type}{flag_str}")
+
+            content = ", ".join(col_defs)
+            instance.add_node(
+                table_name,
+                table_name,
+                content=content,
+                attributes={"type": "table"},
+            )
+
+        # Foreign-key edges (second pass so all nodes exist)
+        for table_name in inspector.get_table_names():
+            for fk in inspector.get_foreign_keys(table_name):
+                ref_table = fk.get("referred_table", "")
+                if ref_table and ref_table in instance._node_ids:
+                    instance.add_edge(table_name, ref_table, "foreign_key")
+
+        return instance
+
     def __repr__(self) -> str:
         return (
             f"SchemaGraph(nodes={len(self._nodes)}, edges={len(self._edges)})"
