@@ -20,6 +20,15 @@ Quick start
 from .graph import SchemaGraph
 from .ranking import personalized_page_rank
 from .types import make_edge, make_node
+from .cte import Aggregation, CTEBuilder, CTEDefinition
 
-__all__ = ["SchemaGraph", "personalized_page_rank", "make_node", "make_edge"]
-__version__ = "0.1.0"
+__all__ = [
+    "SchemaGraph",
+    "personalized_page_rank",
+    "make_node",
+    "make_edge",
+    "Aggregation",
+    "CTEDefinition",
+    "CTEBuilder",
+]
+__version__ = "0.2.0"

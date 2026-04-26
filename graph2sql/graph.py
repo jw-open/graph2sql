@@ -173,6 +173,63 @@ class SchemaGraph:
     # Query interface
     # ------------------------------------------------------------------
 
+    def rank_ctes(
+        self,
+        ctes: List[Any],
+        k: int = 3,
+        alpha: float = 0.85,
+        max_iter: int = 50,
+        tol: float = 1e-6,
+    ) -> Dict[str, Any]:
+        """
+        Convenience wrapper around :class:`~graph2sql.cte.CTEBuilder`.
+
+        Ranks the schema graph for each :class:`~graph2sql.cte.CTEDefinition`
+        independently and returns a structured multi-CTE context plan suitable
+        for passing to an LLM to generate a SQL ``WITH`` clause.
+
+        Parameters
+        ----------
+        ctes : list[CTEDefinition]
+            Ordered list of CTE definitions.
+        k : int
+            Top-k seed nodes per PPR pass.  Default 3.
+        alpha : float
+            PPR damping factor.  Default 0.85.
+        max_iter : int
+            Maximum power-iteration steps.  Default 50.
+        tol : float
+            Convergence tolerance.  Default 1e-6.
+
+        Returns
+        -------
+        dict
+            See :meth:`~graph2sql.cte.CTEBuilder.build` for the full schema.
+
+        Example
+        -------
+        >>> from graph2sql.cte import CTEDefinition, Aggregation
+        >>> result = g.rank_ctes([
+        ...     CTEDefinition(
+        ...         name="revenue_by_region",
+        ...         query="total revenue grouped by region",
+        ...         aggregations=[Aggregation("SUM", "amount", alias="total_revenue")],
+        ...         group_by=["region"],
+        ...     ),
+        ...     CTEDefinition(
+        ...         name="top_customers",
+        ...         query="customers with highest order count",
+        ...         aggregations=[Aggregation("COUNT", "order_id", alias="num_orders")],
+        ...         group_by=["customer_id"],
+        ...     ),
+        ... ])
+        >>> print(result["shared_nodes"])
+        """
+        from .cte import CTEBuilder
+        return CTEBuilder(self).build(
+            ctes, k=k, alpha=alpha, max_iter=max_iter, tol=tol
+        )
+
     def rank(
         self,
         query: str,
